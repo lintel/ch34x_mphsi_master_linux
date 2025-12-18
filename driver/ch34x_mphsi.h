@@ -1,16 +1,18 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #ifndef _CH34X_MPHSI_H
 #define _CH34X_MPHSI_H
 
-#define DEBUG
-#define VERBOSE_DEBUG
-
-#undef DEBUG
-#undef VERBOSE_DEBUG
-
+#include <linux/bitops.h>
+#include <linux/completion.h>
+#include <linux/delay.h>
 #include <linux/errno.h>
 #include <linux/gpio.h>
+#include <linux/gpio/consumer.h>
+#include <linux/gpio/driver.h>
+#include <linux/gpio/machine.h>
 #include <linux/i2c.h>
 #include <linux/idr.h>
+#include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -19,16 +21,7 @@
 #include <linux/spi/spi.h>
 #include <linux/types.h>
 #include <linux/usb.h>
-#include <linux/version.h>
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 17, 0)
-#include <linux/gpio/machine.h>
-#endif
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 13, 0)
-#include <linux/gpio/consumer.h>
-#include <linux/gpio/driver.h>
-#endif
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 0, 0)
 #define spi_master spi_controller
 #define spi_register_master spi_register_controller
 #define spi_unregister_master spi_unregister_controller
@@ -40,31 +33,11 @@
 
 #define spi_device_get_master(spi) ((spi)->controller)
 #define spi_device_get_chip_select(spi, idx) ((spi)->chip_select[idx])
-#else
-#define spi_device_get_master(spi) ((spi)->master)
-#define spi_device_get_chip_select(spi, idx) ((spi)->chip_select)
-#endif
 
 #define CH34X_USBDEV (&(ch34x_dev->intf->dev))
-#define DEV_ERR(d, f, ...)                                                     \
-  dev_err(d, "%s: " f "\n", __FUNCTION__, ##__VA_ARGS__)
-#define DEV_DBG(d, f, ...)                                                     \
-  dev_dbg(d, "%s: " f "\n", __FUNCTION__, ##__VA_ARGS__)
-#define DEV_INFO(d, f, ...)                                                    \
-  dev_info(d, "%s: " f "\n", __FUNCTION__, ##__VA_ARGS__)
-
 #define DRIVER_AUTHOR "WCH"
 #define DRIVER_ALIAS "spi/i2c/gpio: ch347/ch341"
 #define DRIVER_DESC "USB to SPI/I2C/GPIO master driver for ch347/ch341, etc."
-#define VERSION_DESC "V1.4 On 2024.02"
-
-/* check for condition and return with or without err code if it fails */
-#define CHECK_PARAM_RET(cond, err)                                             \
-  if (!(cond))                                                                 \
-    return err;
-#define CHECK_PARAM(cond)                                                      \
-  if (!(cond))                                                                 \
-    return;
 
 #define MAX_BUFFER_LENGTH 0x1000
 
@@ -117,20 +90,20 @@
 #define USB20_CMD_HEADER 3
 #define USB20_CMD_SPI_INIT 0xC0 /* SPI Init Command */
 #define USB20_CMD_SPI_CONTROL                                                  \
-  0xC1 /* SPI Control Command, used to control the SPI interface chip          \
-          selection pin output high or low level and delay time */
+	0xC1 /* SPI Control Command, used to control the SPI interface chip    \
+		selection pin output high or low level and delay time */
 #define USB20_CMD_SPI_RD_WR                                                    \
-  0xC2 /* SPI general read and write command, used for SPI general read and    \
-          write operation, and for short packet communication */
+	0xC2 /* SPI general read and write command, used for SPI general read  \
+		and write operation, and for short packet communication */
 #define USB20_CMD_SPI_BLCK_RD                                                  \
-  0xC3 /* SPI read data command in batch, is generally used for the batch data \
-          read operation. */
+	0xC3 /* SPI read data command in batch, is generally used for the      \
+		batch data read operation. */
 #define USB20_CMD_SPI_BLCK_WR                                                  \
-  0xC4 /* SPI write data command in batch, is generally used for the batch     \
-          data write operation. */
+	0xC4 /* SPI write data command in batch, is generally used for the     \
+		batch data write operation. */
 #define USB20_CMD_INFO_RD                                                      \
-  0xCA /* Parameter acquisition command, used to obtain SPI interface related  \
-          parameters, etc */
+	0xCA /* Parameter acquisition command, used to obtain SPI interface    \
+		related parameters, etc */
 #define USB20_CMD_SPI_CLK_INIT 0xE1 /* System clock control command */
 #define USB20_CMD_FUNC_SWITCH 0xE2  /* ch347f function switch command */
 
@@ -150,14 +123,14 @@
 
 /******************************************************/
 
-#define I2C_SPEED_20K 0  /* low rate 20KHz */
-#define I2C_SPEED_50K 4  /* 50KHz */
+#define I2C_SPEED_20K 0	 /* low rate 20KHz */
+#define I2C_SPEED_50K 4	 /* 50KHz */
 #define I2C_SPEED_100K 1 /* standard rate 100KHz */
 #define I2C_SPEED_200K 5 /* 200KHz */
 #define I2C_SPEED_400K 2 /* fast rate 400KHz */
 #define I2C_SPEED_750K 3 /* high rate 750KHz */
-#define I2C_SPEED_1M 6   /* 1MHz */
-#define I2C_SPEED_2M 7   /* 2MHz */
+#define I2C_SPEED_1M 6	 /* 1MHz */
+#define I2C_SPEED_2M 7	 /* 2MHz */
 
 #define CH341_CMD_I2C_STREAM 0xAA
 
@@ -181,169 +154,149 @@
 #define GPIO_DIR_SET BIT(6)
 
 #define ch34x_spi_maser_to_dev(m)                                              \
-  *((struct ch34x_device **)spi_master_get_devdata(m))
+	*((struct ch34x_device **)spi_master_get_devdata(m))
 
 #ifndef USB_DEVICE_INTERFACE_NUMBER
 #define USB_DEVICE_INTERFACE_NUMBER(vend, prod, num)                           \
-  .match_flags = USB_DEVICE_ID_MATCH_DEVICE | USB_DEVICE_ID_MATCH_INT_NUMBER,  \
-  .idVendor = (vend), .idProduct = (prod), .bInterfaceNumber = (num)
+	.match_flags =                                                         \
+	    USB_DEVICE_ID_MATCH_DEVICE | USB_DEVICE_ID_MATCH_INT_NUMBER,       \
+	.idVendor = (vend), .idProduct = (prod), .bInterfaceNumber = (num)
 #endif
 
-typedef enum _CHIP_TYPE {
-  CHIP_CH341 = 0,
-  CHIP_CH347F = 1,
-  CHIP_CH347T = 2,
-} CHIP_TYPE;
+enum ch34x_chip_type {
+	CHIP_CH341 = 0,
+	CHIP_CH347F = 1,
+	CHIP_CH347T = 2,
+};
 
 struct ch341_pin_config {
-  u8 pin;     /* pin number of ch341a/b/f */
-  char *name; /* pin name */
+	u8 pin;	    /* pin number of ch341a/b/f */
+	char *name; /* pin name */
 };
 
 struct ch347_pin_config {
-  u8 pin;     /* pin number of ch347t */
-  char *name; /* pin name */
-  u8 gpioindex;
-  u8 mode;
-  bool hwirq;
+	u8 pin;	    /* pin number of ch347t */
+	char *name; /* pin name */
+	u8 gpioindex;
+	u8 mode;
+	bool hwirq;
 };
 
 #pragma pack(1)
 
 /* SPI setting structure */
-typedef struct _spi_config {
-  u8 imode;  /* 0-3: SPI Mode0/1/2/3 */
-  u8 iclock; /* SPI clock divider value, caculated by driver automatically */
-  u8 ibyteorder;        /* 0: LSB, 1: MSB */
-  u16 ispi_rw_interval; /* SPI read and write interval, unit: us */
-  u8 ispi_out_def;      /* SPI output data by default while read */
-  u16 ics; /* SPI chip select, valid while BIT7 is 1, low byte: CS0, high byte:
-              CS1 */
-  u8 cs0_polar; /* BIT0：CS0 polar control, 0：low active, 1：high active */
-  u8 cs1_polar; /* BIT0：CS1 polar control, 0：low active, 1：high active */
-  u16 iauto_de_cs;   /* automatically undo the CS after operation completed */
-  u16 iactive_delay; /* delay time of read and write operation after setting CS,
-                        unit: us */
-  u32 ideactive_delay; /* delay time of read and write operation after canceling
-                          CS, unit: us */
-} mspi_cfgs, *mpspi_cfgs;
+struct ch34x_spi_config {
+	u8 mode;	    /* 0-3: SPI Mode0/1/2/3 */
+	u8 clock;	    /* SPI clock divider value */
+	u8 byte_order;	    /* 0: LSB, 1: MSB */
+	u16 rw_interval;    /* SPI read and write interval, unit: us */
+	u8 out_def;	    /* SPI output data by default while read */
+	u16 cs;		    /* SPI chip select bits */
+	u8 cs0_polar;	    /* 0：low active, 1：high active */
+	u8 cs1_polar;	    /* 0：low active, 1：high active */
+	u16 auto_de_cs;	    /* automatically undo the CS after operation */
+	u16 active_delay;   /* delay time after setting CS, unit: us */
+	u32 deactive_delay; /* delay time after canceling CS, unit: us */
+};
 
 /* SPI Init structure definition */
-typedef struct _spi_init_typedef {
-  u16 spi_direction; /* Specifies the SPI unidirectional or bidirectional data
-                 mode. This parameter can be a value of @ref SPI_data_direction
-               */
-  u16 spi_mode;      /* Specifies the SPI operating mode.
-                 This parameter can be a value of @ref SPI_mode */
-  u16 spi_datasize;  /* Specifies the SPI data size.
-                 This parameter can be a value of @ref SPI_data_size */
-  u16 s_spi_cpol;    /* Specifies the serial clock steady state.
-                 This parameter can be a value of @ref SPI_Clock_Polarity */
-  u16 s_spi_cpha;    /* Specifies the clock active edge for the bit capture.
-                 This parameter can be a value of @ref SPI_Clock_Phase */
-  u16 spi_nss;       /* Specifies whether the NSS signal is managed by
-                 hardware (NSS pin) or by software using the SSI bit.
-                 This parameter can be a value of @ref SPI_Slave_Select_management */
-  u16 spi_baudrate_scale; /* Specifies the Baud Rate prescaler value which will
-                          be used to configure the transmit and receive SCK
-                          clock. This parameter can be a value of @ref
-                          SPI_BaudRate_Prescaler.
-                          @note The communication clock is derived from the
-                          master clock. The slave clock does not need to be set.
-                        */
-  u16 spi_firstbit; /* Specifies whether data transfers start from MSB or LSB
-                bit. This parameter can be a value of @ref
-                SPI_MSB_LSB_transmission */
-  u16 spi_crc_poly; /* Specifies the polynomial used for the CRC calculation. */
-} spi_init_typedef;
+struct ch34x_spi_init {
+	u16 direction;
+	u16 mode;
+	u16 datasize;
+	u16 clock_pol;
+	u16 clock_phase;
+	u16 nss;
+	u16 baudrate_scale;
+	u16 first_bit;
+	u16 crc_poly;
+};
 
-typedef struct _stream_usbcfg {
-  spi_init_typedef spi_initcfg;
-  u16 spi_rw_interval; /* SPI read and write interval, unit: us */
-  u8 spi_outdef;       /* SPI output data by default while read */
-  u8 misc_cfg;         /* misc option
-                      BIT7: CS0 polar control, 0：low active, 1：high active
-                      BIT6：CS2 polar control, 0：low active, 1：high active
-                      BIT5：I2C clock stretch control, 0：disable 1: enable
-                      BIT4：generates NACK or not when read the last byte for I2C
-                      operation         BIT3-0：reserved
-                   */
-  u8 reserved[4];      /* reserved */
-} stream_hw_cfgs, *pstream_hw_cfgs;
+struct ch34x_stream_hw_config {
+	struct ch34x_spi_init spi_init;
+	u16 spi_rw_interval;
+	u8 spi_out_def;
+	u8 misc_cfg;
+	u8 reserved[4];
+};
 
 #pragma pack()
 
 /* device specific structure */
 struct ch34x_device {
-  struct mutex io_mutex;
-  struct mutex ops_mutex;
-  struct usb_device *usb_dev; /* usb device */
-  struct usb_interface *intf; /* usb interface */
+	struct mutex io_mutex;
+	struct mutex ops_mutex;
+	struct usb_device *usb_dev; /* usb device */
+	struct usb_interface *intf; /* usb interface */
 
-  struct usb_endpoint_descriptor *bulk_in;  /* usb endpoint bulk in */
-  struct usb_endpoint_descriptor *bulk_out; /* usb endpoint bulk out */
-  struct usb_endpoint_descriptor *intr_in;  /* usb endpoint interrupt in */
-  u8 bulk_out_endpointAddr;                 /*bulk output endpoint*/
+	struct usb_endpoint_descriptor *bulk_in;  /* usb endpoint bulk in */
+	struct usb_endpoint_descriptor *bulk_out; /* usb endpoint bulk out */
+	struct usb_endpoint_descriptor *intr_in; /* usb endpoint interrupt in */
+	u8 bulk_out_endpointAddr;		 /*bulk output endpoint*/
 
-  u8 *bulkin_buf;  /* usb bulk in buffer */
-  u8 *bulkout_buf; /* usb bulk out buffer */
-  u8 *intrin_buf;  /* usb interrupt in buffer */
-  dma_addr_t bulkin_dma;
-  dma_addr_t bulkout_dma;
-  dma_addr_t intrin_dma;
+	u8 *bulkin_buf;	 /* usb bulk in buffer */
+	u8 *bulkout_buf; /* usb bulk out buffer */
+	u8 *intrin_buf;	 /* usb interrupt in buffer */
+	dma_addr_t bulkin_dma;
+	dma_addr_t bulkout_dma;
+	dma_addr_t intrin_dma;
 
-  struct usb_anchor submitted; /* in case we need to retract our submissions */
-  int errors;
-  spinlock_t err_lock;
+	struct usb_anchor
+	    submitted; /* in case we need to retract our submissions */
+	int errors;
+	spinlock_t err_lock;
 
-  int windex;
+	int windex;
 
-  struct urb *intr_urb;
+	struct urb *intr_urb;
 
-  struct spi_master *master;
-  struct spi_device *slaves[CH341_SPI_MAX_NUM_DEVICES];
-  int slave_num;
-  bool last_cpol; /* last message CPOL */
+	struct spi_master *master;
+	struct spi_device *slaves[CH341_SPI_MAX_NUM_DEVICES];
+	int slave_num;
+	bool last_cpol; /* last message CPOL */
 
-  u8 gpio_mask;    /* configuratoin mask defines IN/OUT pins */
-  u8 gpio_io_data; /* current value of ch341 I/O register */
+	u8 gpio_mask;	 /* configuratoin mask defines IN/OUT pins */
+	u8 gpio_io_data; /* current value of ch341 I/O register */
 
-  CHIP_TYPE chiptype;
-  u16 firmver;
-  stream_hw_cfgs hwcfg;
-  mspi_cfgs spicfg;
+	enum ch34x_chip_type chiptype;
+	u16 firmver;
+	struct ch34x_stream_hw_config hwcfg;
+	struct ch34x_spi_config spicfg;
 
-  int id;
-  struct platform_device *spi_pdev;
+	int id;
+	struct platform_device *spi_pdev;
 
-  /* only ch347 */
-  struct gpio_chip gpio;
-  u8 gpio_num;
+	/* only ch347 */
+	struct gpio_chip gpio;
+	u8 gpio_num;
 
-  struct ch347_pin_config *gpio_pins[CH347_MAX_GPIOS];
-  char *gpio_names[CH347_MAX_GPIOS]; /* pin names (gpio_num elements) */
-  int gpio_irq_map[CH347_MAX_GPIOS]; /* GPIO to IRQ map (gpio_num elements) */
+	struct ch347_pin_config *gpio_pins[CH347_MAX_GPIOS];
+	char *gpio_names[CH347_MAX_GPIOS]; /* pin names (gpio_num elements) */
+	int gpio_irq_map[CH347_MAX_GPIOS]; /* GPIO to IRQ map (gpio_num
+					      elements) */
 
-  /* irq device description */
-  struct irq_chip irq;               /* chip descriptor for IRQs */
-  u8 irq_num;                        /* number of pins with IRQs */
-  int irq_base;                      /* base IRQ allocated */
-  int irq_types[CH347_MAX_GPIOS];    /* IRQ types (irq_num elements) */
-  bool irq_enabled[CH347_MAX_GPIOS]; /* IRQ enabled flag (irq_num elements) */
-  int irq_gpio_map[CH347_MAX_GPIOS]; /* IRQ to GPIO pin map (irq_num elements)
-                                      */
-  spinlock_t irq_lock;
+	/* irq device description */
+	struct irq_chip irq;		   /* chip descriptor for IRQs */
+	u8 irq_num;			   /* number of pins with IRQs */
+	int irq_base;			   /* base IRQ allocated */
+	int irq_types[CH347_MAX_GPIOS];	   /* IRQ types (irq_num elements) */
+	bool irq_enabled[CH347_MAX_GPIOS]; /* IRQ enabled flag (irq_num
+					      elements) */
+	int irq_gpio_map[CH347_MAX_GPIOS]; /* IRQ to GPIO pin map (irq_num
+					    * elements)
+					    */
+	spinlock_t irq_lock;
 
-  struct delayed_work work;
+	struct delayed_work work;
 
-  /* i2c master */
-  struct i2c_adapter adapter;
-  bool i2c_init;
+	/* i2c master */
+	struct i2c_adapter adapter;
+	bool i2c_init;
 };
 
 /* Global function prototypes */
 extern int ch34x_usb_transfer(struct ch34x_device *ch34x_dev, int out_len,
-                              int in_len);
+			      int in_len);
 extern bool ch347_func_switch(struct ch34x_device *ch34x_dev, int index);
 extern int ch34x_mphsi_spi_probe(struct ch34x_device *ch34x_dev);
 extern int ch34x_mphsi_spi_remove(struct ch34x_device *ch34x_dev);
