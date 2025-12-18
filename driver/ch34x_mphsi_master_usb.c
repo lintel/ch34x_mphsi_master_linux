@@ -151,100 +151,34 @@ static void ch34x_cfg_remove(struct ch34x_device *ch34x_dev) {
   return;
 }
 
-static void ch34x_write_bulk_callback(struct urb *urb) {
-  struct ch34x_device *ch34x_dev;
-
-  ch34x_dev = urb->context;
-
-  /* sync/async unlink faults aren't errors */
-  if (urb->status) {
-    if (!(urb->status == -ENOENT || urb->status == -ECONNRESET ||
-          urb->status == -ESHUTDOWN))
-      DEV_ERR(CH34X_USBDEV, "%s - nonzero write bulk status received: %d\n",
-              __func__, urb->status);
-
-    spin_lock(&ch34x_dev->err_lock);
-    ch34x_dev->errors = urb->status;
-    spin_unlock(&ch34x_dev->err_lock);
-  }
-
-  /* free up our allocated buffer */
-  usb_free_coherent(urb->dev, urb->transfer_buffer_length, urb->transfer_buffer,
-                    urb->transfer_dma);
-}
-
 int ch34x_usb_transfer(struct ch34x_device *ch34x_dev, int out_len,
                        int in_len) {
-  int retval;
+  int retval = 0;
   int actual = 0;
-  int size;
-  struct urb *urb = NULL;
-  unsigned char *ibuf;
 
   if (out_len != 0) {
-    /* create a urb, and a buffer for it, and copy the data to the urb */
-    urb = usb_alloc_urb(0, GFP_KERNEL);
-    if (!urb) {
-      retval = -ENOMEM;
-      goto error;
-    }
-
-    ibuf = usb_alloc_coherent(ch34x_dev->usb_dev, out_len, GFP_KERNEL,
-                              &urb->transfer_dma);
-    if (!ibuf) {
-      retval = -ENOMEM;
-      goto error;
-    }
-
-    memcpy(ibuf, ch34x_dev->bulkout_buf, out_len);
-
-    /* initialize the urb properly */
-    usb_fill_bulk_urb(
-        urb, ch34x_dev->usb_dev,
+    retval = usb_bulk_msg(
+        ch34x_dev->usb_dev,
         usb_sndbulkpipe(ch34x_dev->usb_dev, ch34x_dev->bulk_out_endpointAddr),
-        ibuf, out_len, ch34x_write_bulk_callback, ch34x_dev);
-    urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
-    usb_anchor_urb(urb, &ch34x_dev->submitted);
-
-    /* send the data out the bulk port */
-    retval = usb_submit_urb(urb, GFP_KERNEL);
-    if (retval) {
-      DEV_ERR(CH34X_USBDEV, "%s - failed submitting write urb, error %d\n",
+        ch34x_dev->bulkout_buf, out_len, &actual, 2000);
+    if (retval < 0) {
+      DEV_ERR(CH34X_USBDEV, "%s - failed submitting write msg, error %d\n",
               __func__, retval);
-      goto error_unanchor;
+      return retval;
     }
   }
 
   if (in_len == 0) {
-    actual = out_len;
-    goto exit;
+    return out_len;
   }
-
-  size = in_len;
 
   memset(ch34x_dev->bulkin_buf, 0, MAX_BUFFER_LENGTH * 2);
   retval = usb_bulk_msg(
       ch34x_dev->usb_dev,
       usb_rcvbulkpipe(ch34x_dev->usb_dev, usb_endpoint_num(ch34x_dev->bulk_in)),
-      ch34x_dev->bulkin_buf, size, &actual, 2000);
-
-exit:
-  /*
-   * release our reference to this urb, the USB core will eventually free
-   * it entirely
-   */
-  usb_free_urb(urb);
+      ch34x_dev->bulkin_buf, in_len, &actual, 2000);
 
   return retval < 0 ? retval : actual;
-
-error_unanchor:
-  usb_unanchor_urb(urb);
-error:
-  if (urb) {
-    usb_free_coherent(ch34x_dev->usb_dev, out_len, ibuf, urb->transfer_dma);
-    usb_free_urb(urb);
-  }
-  return retval;
 }
 
 /**
@@ -377,14 +311,30 @@ static void ch34x_usb_complete_intr_urb(struct urb *urb) {
 }
 
 static void ch34x_usb_free_device(struct ch34x_device *ch34x_dev) {
-  CHECK_PARAM(ch34x_dev)
+  if (!ch34x_dev)
+    return;
 
   if (ch34x_dev->intr_urb)
     usb_free_urb(ch34x_dev->intr_urb);
 
-  usb_set_intfdata(ch34x_dev->intf, NULL);
+  if (ch34x_dev->bulkin_buf)
+    usb_free_coherent(ch34x_dev->usb_dev, MAX_BUFFER_LENGTH * 2,
+                      ch34x_dev->bulkin_buf, ch34x_dev->bulkin_dma);
+  if (ch34x_dev->bulkout_buf)
+    usb_free_coherent(ch34x_dev->usb_dev, MAX_BUFFER_LENGTH * 2,
+                      ch34x_dev->bulkout_buf, ch34x_dev->bulkout_dma);
+  if (ch34x_dev->intrin_buf)
+    usb_free_coherent(ch34x_dev->usb_dev, CH347_USB_MAX_INTR_SIZE,
+                      ch34x_dev->intrin_buf, ch34x_dev->intrin_dma);
+
+  if (ch34x_dev->intf)
+    usb_set_intfdata(ch34x_dev->intf, NULL);
+
   usb_kill_anchored_urbs(&ch34x_dev->submitted);
-  usb_put_dev(ch34x_dev->usb_dev);
+
+  if (ch34x_dev->usb_dev)
+    usb_put_dev(ch34x_dev->usb_dev);
+
   kfree(ch34x_dev);
 }
 
@@ -421,7 +371,9 @@ static int ch34x_usb_probe(struct usb_interface *intf,
 
     if (usb_endpoint_is_bulk_in(endpoint)) {
       ch34x_dev->bulk_in = endpoint;
-      ch34x_dev->bulkin_buf = kmalloc(MAX_BUFFER_LENGTH * 2, GFP_KERNEL);
+      ch34x_dev->bulkin_buf =
+          usb_alloc_coherent(ch34x_dev->usb_dev, MAX_BUFFER_LENGTH * 2,
+                             GFP_KERNEL, &ch34x_dev->bulkin_dma);
       if (!ch34x_dev->bulkin_buf) {
         DEV_ERR(CH34X_USBDEV, "could not allocate bulkin buffer");
         goto error;
@@ -431,7 +383,9 @@ static int ch34x_usb_probe(struct usb_interface *intf,
     else if (usb_endpoint_is_bulk_out(endpoint)) {
       ch34x_dev->bulk_out = endpoint;
       ch34x_dev->bulk_out_endpointAddr = endpoint->bEndpointAddress;
-      ch34x_dev->bulkout_buf = kmalloc(MAX_BUFFER_LENGTH * 2, GFP_KERNEL);
+      ch34x_dev->bulkout_buf =
+          usb_alloc_coherent(ch34x_dev->usb_dev, MAX_BUFFER_LENGTH * 2,
+                             GFP_KERNEL, &ch34x_dev->bulkout_dma);
       if (!ch34x_dev->bulkout_buf) {
         DEV_ERR(CH34X_USBDEV, "could not allocate bulkout buffer");
         goto error;
@@ -440,7 +394,9 @@ static int ch34x_usb_probe(struct usb_interface *intf,
 
     else if (usb_endpoint_xfer_int(endpoint)) {
       ch34x_dev->intr_in = endpoint;
-      ch34x_dev->intrin_buf = kmalloc(CH347_USB_MAX_INTR_SIZE, GFP_KERNEL);
+      ch34x_dev->intrin_buf =
+          usb_alloc_coherent(ch34x_dev->usb_dev, CH347_USB_MAX_INTR_SIZE,
+                             GFP_KERNEL, &ch34x_dev->intrin_dma);
       if (!ch34x_dev->intrin_buf) {
         DEV_ERR(CH34X_USBDEV, "could not allocate intrin buffer");
         goto error;
@@ -543,12 +499,6 @@ error1:
   ch34x_cfg_remove(ch34x_dev);
   ida_simple_remove(&ch34x_devid_ida, ch34x_dev->id);
 error:
-  if (ch34x_dev->bulkin_buf)
-    kfree(ch34x_dev->bulkin_buf);
-  if (ch34x_dev->bulkout_buf)
-    kfree(ch34x_dev->bulkout_buf);
-  if (ch34x_dev->intrin_buf)
-    kfree(ch34x_dev->intrin_buf);
   ch34x_usb_free_device(ch34x_dev);
 
   return ret;
@@ -604,12 +554,6 @@ static void ch34x_usb_disconnect(struct usb_interface *intf) {
   ch34x_mphsi_spi_remove(ch34x_dev);
   ch34x_cfg_remove(ch34x_dev);
   ida_simple_remove(&ch34x_devid_ida, ch34x_dev->id);
-  if (ch34x_dev->bulkin_buf)
-    kfree(ch34x_dev->bulkin_buf);
-  if (ch34x_dev->bulkout_buf)
-    kfree(ch34x_dev->bulkout_buf);
-  if (ch34x_dev->intrin_buf)
-    kfree(ch34x_dev->intrin_buf);
   ch34x_usb_free_device(ch34x_dev);
 }
 

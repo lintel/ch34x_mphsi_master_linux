@@ -288,6 +288,9 @@ struct ch34x_device {
   u8 *bulkin_buf;  /* usb bulk in buffer */
   u8 *bulkout_buf; /* usb bulk out buffer */
   u8 *intrin_buf;  /* usb interrupt in buffer */
+  dma_addr_t bulkin_dma;
+  dma_addr_t bulkout_dma;
+  dma_addr_t intrin_dma;
 
   struct usb_anchor submitted; /* in case we need to retract our submissions */
   int errors;
